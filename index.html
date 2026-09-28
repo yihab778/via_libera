@@ -192,6 +192,10 @@ img.offsign{object-fit:contain;display:block}
 :root[data-theme="dark"] img.offsign{background:#fff;border-radius:8px;padding:3px}
 .diagwrap{border-radius:14px;overflow:hidden;border:1px solid var(--line, #0002)}
 svg.diag{display:block;width:100%;height:auto}
+.oqfig img{max-width:100%;max-height:230px;object-fit:contain;display:block;margin:auto;background:#fff;border-radius:8px}
+.oqch{display:block;width:100%;text-align:left;border:0;cursor:pointer;font:inherit;color:inherit}
+.oqch .meter{margin-top:8px}
+a.trbtn{display:inline-block;text-decoration:none}
 
 :root{padding-top:env(safe-area-inset-top,0px)}
 html,body{margin:0}
@@ -3327,6 +3331,193 @@ function trBlock(key, opts = {}) {
   return `<div class="trbox" dir="rtl" lang="ar"><p class="trq">${esc(ar[0])}</p><ul>${ar.slice(1).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`;
 }
 
+// ═════════ VIA LIBERA — Quiz ministeriali (solo PWA) ═════════
+// Dati in quiz.js (caricato solo quando serve). Progressi in S.oq.
+let OQ = null, OQ_LOADING = false, OQ_TIMER = null;
+function oqState() {
+  if (!S.oq) S.oq = { st: {}, err: [], sims: [] };
+  return S.oq;
+}
+function oqLoad(cb) {
+  if (window.OQ_DATA) { cb(); return; }
+  if (OQ_LOADING) return;
+  OQ_LOADING = true; render();
+  const s = document.createElement('script'); s.src = 'quiz.js';
+  s.onload = () => { OQ_LOADING = false; cb(); };
+  s.onerror = () => { OQ_LOADING = false; toast('Non riesco a caricare i quiz: apri l\'app una volta con internet.'); render(); };
+  document.head.appendChild(s);
+}
+const oqId = (bi, qi) => bi + '.' + qi;
+function oqQ(id) { const [bi, qi] = id.split('.').map(Number); const b = OQ_DATA.b[bi], q = b[3][qi]; return { id, bi, qi, b, s: q[0], v: !!q[1], fig: q[2] || 0, ch: b[2] }; }
+function oqAllIds(ch) {
+  const ids = [];
+  OQ_DATA.b.forEach((b, bi) => { if (ch == null || b[2] === ch) b[3].forEach((_, qi) => ids.push(oqId(bi, qi))); });
+  return ids;
+}
+function oqShuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+function oqChStats(ch) {
+  const st = oqState().st, ids = oqAllIds(ch);
+  let seen = 0, ok = 0;
+  for (const id of ids) { const x = st[id]; if (x) { seen++; if (x[2]) ok++; } }
+  return { n: ids.length, seen, ok };
+}
+function oqRecord(id, right) {
+  const o = oqState(), x = o.st[id] || [0, 0, 0];
+  if (right) { x[0]++; x[2] = 1; } else { x[1]++; x[2] = 0; }
+  o.st[id] = x;
+  const i = o.err.indexOf(id);
+  if (!right && i < 0) o.err.push(id);
+  if (right && i >= 0 && OQ && OQ.mode === 'err') o.err.splice(i, 1);
+  if (typeof markActive === 'function') { try { markActive(); } catch (e) {} }
+  save();
+}
+
+// ───── avvio delle modalità ─────
+function oqStartPractice(ch) {
+  const st = oqState().st, ids = oqAllIds(ch);
+  const unseen = oqShuffle(ids.filter(id => !st[id]));
+  const wrong = oqShuffle(ids.filter(id => st[id] && !st[id][2]));
+  const rest = oqShuffle(ids.filter(id => st[id] && st[id][2]));
+  const list = [...wrong.slice(0, 6), ...unseen.slice(0, 20)];
+  for (const id of rest) { if (list.length >= 20) break; list.push(id); }
+  OQ = { mode: 'prac', ch, list: oqShuffle(list.slice(0, 20)), i: 0, ans: null, right: 0 };
+  VIEW = 'oq'; render(); window.scrollTo(0, 0);
+}
+function oqStartErrors() {
+  const e = oqState().err.slice();
+  if (!e.length) { toast('Nessun errore da ripassare 👍'); return; }
+  OQ = { mode: 'err', list: oqShuffle(e).slice(0, 20), i: 0, ans: null, right: 0 };
+  VIEW = 'oq'; render(); window.scrollTo(0, 0);
+}
+function oqStartExam() {
+  // 30 domande da 30 blocchi diversi, distribuite su tutti gli argomenti
+  const byCh = OQ_DATA.ch.map(() => []);
+  OQ_DATA.b.forEach((b, bi) => byCh[b[2]].push(bi));
+  const picked = new Set(), qs = [];
+  const chOrder = oqShuffle(byCh.map((_, i) => i));
+  let k = 0;
+  while (qs.length < 30) {
+    const ch = chOrder[k++ % chOrder.length], pool = byCh[ch].filter(bi => !picked.has(bi));
+    if (!pool.length) continue;
+    const bi = pool[Math.floor(Math.random() * pool.length)]; picked.add(bi);
+    const qi = Math.floor(Math.random() * OQ_DATA.b[bi][3].length);
+    qs.push(oqId(bi, qi));
+  }
+  OQ = { mode: 'exam', list: qs, i: 0, ans: Array(30).fill(null), end: Date.now() + 20 * 60 * 1000, done: false, confirm: false };
+  VIEW = 'oq'; render(); window.scrollTo(0, 0);
+  clearInterval(OQ_TIMER);
+  OQ_TIMER = setInterval(() => {
+    if (!OQ || OQ.mode !== 'exam' || OQ.done) { clearInterval(OQ_TIMER); return; }
+    const left = OQ.end - Date.now(), el = document.getElementById('oqtimer');
+    if (el) el.textContent = '⏱ ' + oqFmt(left);
+    if (left <= 0) { clearInterval(OQ_TIMER); oqSubmit(); }
+  }, 1000);
+}
+function oqFmt(ms) { const s = Math.max(0, Math.round(ms / 1000)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+function oqSubmit() {
+  clearInterval(OQ_TIMER);
+  let err = 0;
+  OQ.list.forEach((id, i) => { const q = oqQ(id), a = OQ.ans[i]; const right = a === q.v; if (!right) err++; if (a !== null) oqRecord(id, right); else oqRecord(id, false); });
+  OQ.done = true; OQ.err = err;
+  const o = oqState(); o.sims.push({ d: today(), e: err }); o.sims = o.sims.slice(-30);
+  save(); render(); window.scrollTo(0, 0);
+}
+function oqReady() { const s = oqState().sims.slice(-5); return s.length === 5 && s.every(x => x.e <= 3); }
+
+// ───── viste ─────
+function oqFigure(q) { const src = q.fig && OQ_DATA.f[q.fig]; return src ? `<div class="signwrap oqfig"><img src="${src}" alt="Figura ${q.fig}"></div>` : ''; }
+function oqTrLink(s) { return `<a class="trbtn" href="https://translate.google.com/?sl=it&tl=ar&op=translate&text=${encodeURIComponent(s)}" target="_blank" rel="noopener">🌍 عربي · Traduci (online)</a>`; }
+function oqHomePanel() {
+  if (typeof IS_PWA === 'undefined' || !IS_PWA) return '';
+  const o = oqState(), sims = o.sims.slice(-5);
+  const seen = Object.keys(o.st).length;
+  return `<div class="panel stack"><div class="row between"><span class="eyebrow">📋 Quiz ministeriali</span><span class="small muted tnum">${seen} / 7144 fatte</span></div>
+    <p class="small muted">Le frasi vere dell'esame (listato A e B aggiornato al 27/02/2025), con le figure ufficiali.</p>
+    ${sims.length ? `<p class="small tnum">Ultime schede: ${sims.map(x => `<b style="color:${x.e <= 3 ? 'var(--ok, #1e9e4a)' : 'var(--ko, #d62828)'}">${x.e}</b>`).join(' · ')} errori ${oqReady() ? '· ✅ <b>Pronto per l\'esame</b>' : ''}</p>` : ''}
+    <div class="train">
+      <button data-oq="exam"><b>🏁 Scheda d'esame ministeriale</b><small>30 domande · 20 minuti · max 3 errori</small></button>
+      <button data-oq="menu"><b>📚 Allenati per argomento</b><small>31 argomenti · 20 domande alla volta</small></button>
+      <button data-oq="err"><b>🧹 I miei errori</b><small>${o.err.length} domande da ripassare</small></button>
+    </div>${OQ_LOADING ? '<p class="small muted">Carico i quiz…</p>' : ''}</div>`;
+}
+function oqView() {
+  if (!window.OQ_DATA) return `<div class="panel"><p>Carico i quiz…</p></div>`;
+  if (!OQ || OQ.mode === 'menu') return oqMenu();
+  if (OQ.mode === 'exam') return OQ.done ? oqExamResult() : oqExamView();
+  return oqPracView();
+}
+function oqMenu() {
+  return `<div class="stack"><div class="shead"><button class="x" data-oq="close" aria-label="Chiudi">✕</button><span class="phase">📚 Quiz ministeriali per argomento</span></div>
+    ${OQ_DATA.ch.map((c, i) => { const s = oqChStats(i); const p = s.n ? s.ok / s.n : 0; return `<button class="panel oqch" data-oqch="${i}"><div class="row between"><b>${esc(c[0])}</b><span class="small muted tnum">${s.ok}/${s.n}</span></div><div class="meter"><i style="width:${Math.round(p * 100)}%"></i></div></button>`; }).join('')}
+  </div>`;
+}
+function oqPracView() {
+  if (OQ.i >= OQ.list.length) {
+    return `<div class="stack center" style="padding-top:20px"><div class="big">${OQ.right >= OQ.list.length * 0.9 ? '🎉' : '💪'}</div><h1 class="tnum">${OQ.right} / ${OQ.list.length}</h1><p class="muted">risposte giuste</p>
+      <div class="row"><button class="btn line" style="flex:1" data-oq="${OQ.mode === 'err' ? 'err' : 'again'}">Altre 20</button><button class="btn" style="flex:1;background:var(--accent);color:var(--accent-ink)" data-oq="close">Fine</button></div></div>`;
+  }
+  const q = oqQ(OQ.list[OQ.i]), ch = OQ_DATA.ch[q.ch];
+  const head = `<div class="shead"><button class="x" data-oq="close" aria-label="Chiudi">✕</button><div class="meter"><i style="width:${OQ.i / OQ.list.length * 100}%"></i></div><span class="small muted tnum">${OQ.i + 1}/${OQ.list.length}</span></div>`;
+  let h = head + `<div class="stack"><span class="phase muted">${OQ.mode === 'err' ? '🧹 I miei errori' : '📚 ' + esc(ch[0])} · ${esc(q.b[1])}</span>
+    <div class="qcard">${oqFigure(q)}<p class="qtext">${esc(q.s)}</p>${oqTrLink(q.s)}`;
+  if (OQ.ans === null) {
+    h += `<div class="vf"><button class="f" data-oqa="0">FALSO</button><button class="v" data-oqa="1">VERO</button></div></div>`;
+  } else {
+    const right = OQ.ans === q.v, vv = q.v ? 'VERO' : 'FALSO';
+    const u = ch[1][0];
+    h += `</div><div class="result ${right ? 'ok' : 'ko'}"><h3>${right ? '✓ Giusto' : '✗ Sbagliato'}: è ${vv}</h3>
+      ${right ? '' : `<p>Hai risposto ${OQ.ans ? 'VERO' : 'FALSO'}. Rileggi la frase parola per parola e ripassa la teoria di questo argomento.</p>`}
+      <div class="row"><button class="btn line" style="flex:1" data-browse="${u}">📖 Teoria</button><button class="btn" style="flex:1.4;background:var(--accent);color:var(--accent-ink)" data-oq="next">Avanti →</button></div></div>`;
+  }
+  return h + `</div>`;
+}
+function oqExamView() {
+  const q = oqQ(OQ.list[OQ.i]), answered = OQ.ans.filter(v => v !== null).length;
+  return `<div class="stack"><div class="shead"><button class="x" data-oq="close" aria-label="Esci">✕</button><span class="phase">🏁 Scheda ministeriale</span><span class="timer tnum" id="oqtimer" style="margin-left:auto">⏱ ${oqFmt(OQ.end - Date.now())}</span></div>
+    <div class="exgrid">${OQ.list.map((_, i) => `<button class="exdot${i === OQ.i ? ' cur' : ''}${OQ.ans[i] !== null ? ' on' : ''}" data-oqgo="${i}" aria-label="Domanda ${i + 1}">${i + 1}</button>`).join('')}</div>
+    <div class="qcard"><span class="small muted tnum">Domanda ${OQ.i + 1} di 30</span>${oqFigure(q)}<p class="qtext">${esc(q.s)}</p>
+      <div class="vf"><button class="f" data-oqx="0" aria-pressed="${OQ.ans[OQ.i] === false}">FALSO</button><button class="v" data-oqx="1" aria-pressed="${OQ.ans[OQ.i] === true}">VERO</button></div></div>
+    <div class="row"><button class="btn line" style="flex:1" data-oq="prev" ${OQ.i ? '' : 'disabled'}>← Precedente</button><button class="btn line" style="flex:1" data-oq="nextq" ${OQ.i < 29 ? '' : 'disabled'}>Successiva →</button></div>
+    ${OQ.confirm ? `<div class="panel stack"><p><b>Consegnare?</b> ${30 - answered ? `Hai ${30 - answered} domande senza risposta: contano come errori.` : 'Hai risposto a tutte le domande.'}</p><div class="row"><button class="btn line" style="flex:1" data-oq="noconf">Continua</button><button class="btn" style="flex:1;background:var(--accent);color:var(--accent-ink)" data-oq="submit">Consegna</button></div></div>`
+      : `<button class="cta" data-oq="confirm">Consegna (${answered}/30)</button>`}</div>`;
+}
+function oqExamResult() {
+  const pass = OQ.err <= 3;
+  const wrong = OQ.list.map((id, i) => ({ q: oqQ(id), i, a: OQ.ans[i] })).filter(x => x.a !== x.q.v);
+  return `<div class="stack" style="padding-top:12px"><div class="center stack" style="gap:6px"><div class="big">${pass ? '🎉' : '📚'}</div><h1>${pass ? 'PROMOSSO' : 'Non ancora'}</h1><p class="muted tnum">${OQ.err} ${OQ.err === 1 ? 'errore' : 'errori'} su 30 · ne sono ammessi 3</p></div>
+    ${wrong.length ? `<div class="panel"><span class="eyebrow">Le risposte sbagliate</span>${wrong.map(x => `<div class="err"><span class="small muted">${x.i + 1}. ${esc(OQ_DATA.ch[x.q.ch][0])} · ${x.a === null ? 'non risposta' : 'hai risposto ' + (x.a ? 'VERO' : 'FALSO')}</span>${oqFigure(x.q)}<p>${esc(x.q.s)}</p><p><span class="ans ${x.q.v ? 'v' : 'f'}">${x.q.v ? 'VERO' : 'FALSO'}</span></p></div>`).join('')}</div>` : ''}
+    <p class="small muted">Gli errori sono salvati in «I miei errori».</p>
+    <button class="cta" data-oq="close">Torna alla home</button></div>`;
+}
+
+// ───── clic ─────
+function oqClick(d) {
+  if (d.oqch !== undefined) { oqLoad(() => oqStartPractice(+d.oqch)); return true; }
+  if (d.oqa !== undefined) {
+    if (OQ.ans !== null) return true;
+    const q = oqQ(OQ.list[OQ.i]); OQ.ans = d.oqa === '1';
+    const right = OQ.ans === q.v; if (right) OQ.right++;
+    oqRecord(q.id, right); render(); return true;
+  }
+  if (d.oqx !== undefined) { OQ.ans[OQ.i] = d.oqx === '1'; if (OQ.i < 29) OQ.i++; render(); return true; }
+  if (d.oqgo !== undefined) { OQ.i = +d.oqgo; render(); return true; }
+  if (!d.oq) return false;
+  switch (d.oq) {
+    case 'exam': oqLoad(oqStartExam); break;
+    case 'menu': oqLoad(() => { OQ = { mode: 'menu' }; VIEW = 'oq'; render(); window.scrollTo(0, 0); }); break;
+    case 'err': oqLoad(oqStartErrors); break;
+    case 'again': oqStartPractice(OQ.ch); break;
+    case 'next': OQ.i++; OQ.ans = null; render(); window.scrollTo(0, 0); break;
+    case 'prev': OQ.i = Math.max(0, OQ.i - 1); render(); break;
+    case 'nextq': OQ.i = Math.min(29, OQ.i + 1); render(); break;
+    case 'confirm': OQ.confirm = true; render(); break;
+    case 'noconf': OQ.confirm = false; render(); break;
+    case 'submit': oqSubmit(); break;
+    case 'close': clearInterval(OQ_TIMER); OQ = null; VIEW = 'home'; render(); window.scrollTo(0, 0); break;
+  }
+  return true;
+}
+
 // ═════════ VIA LIBERA — motore ═════════
 const APP = document.getElementById('app');
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -3583,8 +3774,9 @@ function render() {
   else if (VIEW === 'end') h = endView();
   else if (VIEW === 'browse') h = browseView();
   else if (VIEW === 'exam') h = examView();
+  else if (VIEW === 'oq' && typeof oqView === 'function') h = oqView();
   APP.innerHTML = h;
-  document.getElementById('nav').hidden = ['session', 'end', 'browse', 'exam'].includes(VIEW);
+  document.getElementById('nav').hidden = ['session', 'end', 'browse', 'exam', 'oq'].includes(VIEW);
   document.querySelectorAll('#nav button').forEach(b => b.setAttribute('aria-current', b.dataset.v === VIEW ? 'page' : 'false'));
   renderSheet();
   afterRender();
@@ -3623,6 +3815,7 @@ function homeView() {
       <ol class="mission">${M.lines.map((l, i) => `<li><span class="n">${i + 1}</span><span>${l.i} ${esc(l.t)}</span></li>`).join('')}</ol>
       <button class="cta" data-act="go">▶ INIZIA</button>
     </div>
+    ${typeof oqHomePanel === 'function' ? oqHomePanel() : ''}
     <div class="panel stack"><span class="eyebrow">Allenamenti</span>
       <div class="train">
         <button data-act="exam"><b>🏁 Simulazione d'esame</b><small>30 domande · 20 minuti · max 3 errori</small></button>
@@ -3852,6 +4045,7 @@ document.addEventListener('click', e => {
   if (!t) return;
   if (t.classList.contains('scrim') && e.target !== t) return;
   const d = t.dataset;
+  if (typeof oqClick === 'function' && oqClick(d)) return;
   if (d.v) { VIEW = d.v; render(); window.scrollTo(0, 0); return; }
   if (d.min) { SEL_MIN = +d.min; render(); return; }
   if (d.ans) { answer(d.ans === '1'); return; }
@@ -3886,8 +4080,8 @@ document.addEventListener('click', e => {
     case 'fixred': { const as = ATOMS.filter(a => peek(a.id)?.red); startSession(as.map(a => ({ k: 'q', a: a.id, mode: 'quiz', ph: '🔴 Convinzioni da correggere' })), 'red'); break; }
     case 'marathon': { const as = ATOMS.filter(a => { const s = peek(a.id); return s && s.w > 0 && s.st < 3; }).sort((x, y) => weakness(y) - weakness(x)).slice(0, 15); if (!as.length) { toast('Nessun errore da ripassare 🎉'); break; } startSession(as.map(a => ({ k: 'q', a: a.id, mode: 'quiz', ph: '🧹 Maratona errori' })), 'marathon'); break; }
     case 'bprev': BROWSE.i = Math.max(0, BROWSE.i - 1); render(); window.scrollTo(0, 0); break;
-    case 'bnext': { const n = ATOMS.filter(a => a.u === BROWSE.u).length; if (BROWSE.i < n - 1) { BROWSE.i++; render(); window.scrollTo(0, 0); } else { VIEW = 'path'; render(); } break; }
-    case 'closebrowse': VIEW = 'path'; render(); break;
+    case 'bnext': { const n = ATOMS.filter(a => a.u === BROWSE.u).length; if (BROWSE.i < n - 1) { BROWSE.i++; render(); window.scrollTo(0, 0); } else { VIEW = (typeof OQ !== 'undefined' && OQ && OQ.mode !== 'menu' ? 'oq' : 'path'); render(); } break; }
+    case 'closebrowse': VIEW = (typeof OQ !== 'undefined' && OQ && OQ.mode !== 'menu' ? 'oq' : 'path'); render(); break;
     case 'export': { XFER = 'export'; render(); const c = exportCode(); try { navigator.clipboard.writeText(c).then(() => toast('Codice copiato'), () => {}); } catch (e) {} setTimeout(() => { const el = document.getElementById('expcode'); if (el) el.select(); }, 50); break; }
     case 'import': XFER = 'import'; render(); break;
     case 'doimport': {

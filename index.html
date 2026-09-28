@@ -3389,6 +3389,12 @@ function oqStartErrors() {
   OQ = { mode: 'err', list: oqShuffle(e).slice(0, 20), i: 0, ans: null, right: 0 };
   VIEW = 'oq'; render(); window.scrollTo(0, 0);
 }
+function oqStartTrap() {
+  const st = oqState().st, ids = oqAllIds().filter(id => trapWord(oqQ(id).s));
+  const wrong = oqShuffle(ids.filter(id => st[id] && !st[id][2])), fresh = oqShuffle(ids.filter(id => !st[id])), rest = oqShuffle(ids.filter(id => st[id] && st[id][2]));
+  OQ = { mode: 'trap', list: [...wrong.slice(0, 6), ...fresh, ...rest].slice(0, 20), i: 0, ans: null, right: 0, total: ids.length };
+  oqShuffle(OQ.list); VIEW = 'oq'; render(); window.scrollTo(0, 0);
+}
 function oqStartExam() {
   // 30 domande da 30 blocchi diversi, distribuite su tutti gli argomenti
   const byCh = OQ_DATA.ch.map(() => []);
@@ -3437,6 +3443,7 @@ function oqHomePanel() {
     <div class="train">
       <button data-oq="exam"><b>🏁 Scheda d'esame ministeriale</b><small>30 domande · 20 minuti · max 3 errori</small></button>
       <button data-oq="menu"><b>📚 Allenati per argomento</b><small>31 argomenti · 20 domande alla volta</small></button>
+      <button data-oq="trap"><b>🪤 Caccia alla trappola ministeriale</b><small>638 frasi con «sempre», «solo», «mai»…</small></button>
       <button data-oq="err"><b>🧹 I miei errori</b><small>${o.err.length} domande da ripassare</small></button>
     </div>${OQ_LOADING ? '<p class="small muted">Carico i quiz…</p>' : ''}</div>`;
 }
@@ -3454,12 +3461,12 @@ function oqMenu() {
 function oqPracView() {
   if (OQ.i >= OQ.list.length) {
     return `<div class="stack center" style="padding-top:20px"><div class="big">${OQ.right >= OQ.list.length * 0.9 ? '🎉' : '💪'}</div><h1 class="tnum">${OQ.right} / ${OQ.list.length}</h1><p class="muted">risposte giuste</p>
-      <div class="row"><button class="btn line" style="flex:1" data-oq="${OQ.mode === 'err' ? 'err' : 'again'}">Altre 20</button><button class="btn" style="flex:1;background:var(--accent);color:var(--accent-ink)" data-oq="close">Fine</button></div></div>`;
+      <div class="row"><button class="btn line" style="flex:1" data-oq="${OQ.mode === 'err' ? 'err' : OQ.mode === 'trap' ? 'trap' : 'again'}">Altre 20</button><button class="btn" style="flex:1;background:var(--accent);color:var(--accent-ink)" data-oq="close">Fine</button></div></div>`;
   }
   const q = oqQ(OQ.list[OQ.i]), ch = OQ_DATA.ch[q.ch];
   const head = `<div class="shead"><button class="x" data-oq="close" aria-label="Chiudi">✕</button><div class="meter"><i style="width:${OQ.i / OQ.list.length * 100}%"></i></div><span class="small muted tnum">${OQ.i + 1}/${OQ.list.length}</span></div>`;
-  let h = head + `<div class="stack"><span class="phase muted">${OQ.mode === 'err' ? '🧹 I miei errori' : '📚 ' + esc(ch[0])} · ${esc(q.b[1])}</span>
-    <div class="qcard">${oqFigure(q)}<p class="qtext">${esc(q.s)}</p>${oqTrLink(q.s)}`;
+  let h = head + `<div class="stack"><span class="phase muted">${OQ.mode === 'err' ? '🧹 I miei errori' : OQ.mode === 'trap' ? '🪤 Caccia alla trappola' : '📚 ' + esc(ch[0])} · ${esc(q.b[1])}</span>
+    <div class="qcard">${oqFigure(q)}<p class="qtext">${OQ.mode === 'trap' ? highlightTrap(q.s) : esc(q.s)}</p>${oqTrLink(q.s)}`;
   if (OQ.ans === null) {
     h += `<div class="vf"><button class="f" data-oqa="0">FALSO</button><button class="v" data-oqa="1">VERO</button></div></div>`;
   } else {
@@ -3467,6 +3474,7 @@ function oqPracView() {
     const u = ch[1][0];
     h += `</div><div class="result ${right ? 'ok' : 'ko'}"><h3>${right ? '✓ Giusto' : '✗ Sbagliato'}: è ${vv}</h3>
       ${right ? '' : `<p>Hai risposto ${OQ.ans ? 'VERO' : 'FALSO'}. Rileggi la frase parola per parola e ripassa la teoria di questo argomento.</p>`}
+      ${OQ.mode === 'trap' ? `<p class="small">🪤 Nel listato, le frasi con «${esc(trapWord(q.s))}» e parole simili sono FALSE circa 7 volte su 10. ${q.v ? 'Questa però è VERA: la parola assoluta non basta, conta la regola.' : 'Qui la parola assoluta rende la frase falsa.'}</p>` : ''}
       <div class="row"><button class="btn line" style="flex:1" data-browse="${u}">📖 Teoria</button><button class="btn" style="flex:1.4;background:var(--accent);color:var(--accent-ink)" data-oq="next">Avanti →</button></div></div>`;
   }
   return h + `</div>`;
@@ -3506,6 +3514,7 @@ function oqClick(d) {
     case 'exam': oqLoad(oqStartExam); break;
     case 'menu': oqLoad(() => { OQ = { mode: 'menu' }; VIEW = 'oq'; render(); window.scrollTo(0, 0); }); break;
     case 'err': oqLoad(oqStartErrors); break;
+    case 'trap': oqLoad(oqStartTrap); break;
     case 'again': oqStartPractice(OQ.ch); break;
     case 'next': OQ.i++; OQ.ans = null; render(); window.scrollTo(0, 0); break;
     case 'prev': OQ.i = Math.max(0, OQ.i - 1); render(); break;

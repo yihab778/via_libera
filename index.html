@@ -3432,9 +3432,34 @@ function oqReady() { const s = oqState().sims.slice(-5); return s.length === 5 &
 
 // ───── viste ─────
 function oqFigure(q) { const src = q.fig && OQ_DATA.f[q.fig]; return src ? `<div class="signwrap oqfig"><img src="${src}" alt="Figura ${q.fig}"></div>` : ''; }
+const OQ_TR = {}; // id -> 'loading' | 'error' | [ar]
+function oqTrKey(id) { return 'o|' + id; }
+async function oqTranslate(id) {
+  const k = oqTrKey(id);
+  if (TRC[k]) { OQ_TR[id] = 'open'; render(); return; }
+  OQ_TR[id] = 'loading'; render();
+  try {
+    const src = oqQ(id).s;
+    const prompt = 'Traduci in arabo standard moderno, semplice, per uno studente straniero della patente B italiana. Dopo ogni termine tecnico stradale metti tra parentesi il termine italiano. Mantieni numeri e unità. Non aggiungere spiegazioni e non cambiare il significato (vero/falso). Rispondi SOLO con un array JSON di 1 stringa.\n\n' + JSON.stringify([src]);
+    const out = await SAMPLE.json(prompt, { modelTier: 'quick', cache: { gcTime: 86400000 } });
+    if (!Array.isArray(out) || !out[0]) throw 0;
+    TRC[k] = [String(out[0])]; TRL[k] = TRC[k];
+    try { localStorage.setItem('vl_tr', JSON.stringify(TRL)); } catch (e) {}
+    OQ_TR[id] = 'open';
+  } catch (e) { OQ_TR[id] = 'error'; }
+  render();
+}
+function oqTrBlock(id, s) {
+  const k = oqTrKey(id), st = OQ_TR[id];
+  if (typeof TR_READY !== 'undefined' && (TR_READY || TRC[k])) {
+    const btn = `<button class="trbtn" data-oqtr="${id}">${st === 'open' ? 'إخفاء الترجمة · Nascondi' : st === 'loading' ? '⏳ Traduco…' : '🌍 عربي · Traduci'}</button>`;
+    const box = st === 'open' && TRC[k] ? `<div class="trbox" dir="rtl" lang="ar"><p class="trq">${esc(TRC[k][0])}</p></div>` : st === 'error' ? '<p class="small muted">Traduzione non riuscita. Riprova tra poco.</p>' : '';
+    return btn + box;
+  }
+  return oqTrLink(s);
+}
 function oqTrLink(s) { return `<a class="trbtn" href="https://translate.google.com/?sl=it&tl=ar&op=translate&text=${encodeURIComponent(s)}" target="_blank" rel="noopener">🌍 عربي · Traduci (online)</a>`; }
 function oqHomePanel() {
-  if (typeof IS_PWA === 'undefined' || !IS_PWA) return '';
   const o = oqState(), sims = o.sims.slice(-5);
   const seen = Object.keys(o.st).length;
   return `<div class="panel stack"><div class="row between"><span class="eyebrow">📋 Quiz ministeriali</span><span class="small muted tnum">${seen} / 7144 fatte</span></div>
@@ -3466,7 +3491,7 @@ function oqPracView() {
   const q = oqQ(OQ.list[OQ.i]), ch = OQ_DATA.ch[q.ch];
   const head = `<div class="shead"><button class="x" data-oq="close" aria-label="Chiudi">✕</button><div class="meter"><i style="width:${OQ.i / OQ.list.length * 100}%"></i></div><span class="small muted tnum">${OQ.i + 1}/${OQ.list.length}</span></div>`;
   let h = head + `<div class="stack"><span class="phase muted">${OQ.mode === 'err' ? '🧹 I miei errori' : OQ.mode === 'trap' ? '🪤 Caccia alla trappola' : '📚 ' + esc(ch[0])} · ${esc(q.b[1])}</span>
-    <div class="qcard">${oqFigure(q)}<p class="qtext">${OQ.mode === 'trap' ? highlightTrap(q.s) : esc(q.s)}</p>${oqTrLink(q.s)}`;
+    <div class="qcard">${oqFigure(q)}<p class="qtext">${OQ.mode === 'trap' ? highlightTrap(q.s) : esc(q.s)}</p>${oqTrBlock(q.id, q.s)}`;
   if (OQ.ans === null) {
     h += `<div class="vf"><button class="f" data-oqa="0">FALSO</button><button class="v" data-oqa="1">VERO</button></div></div>`;
   } else {
@@ -3508,6 +3533,7 @@ function oqClick(d) {
     oqRecord(q.id, right); render(); return true;
   }
   if (d.oqx !== undefined) { OQ.ans[OQ.i] = d.oqx === '1'; if (OQ.i < 29) OQ.i++; render(); return true; }
+  if (d.oqtr !== undefined) { if (OQ_TR[d.oqtr] === 'open') { delete OQ_TR[d.oqtr]; render(); } else if (OQ_TR[d.oqtr] !== 'loading') oqTranslate(d.oqtr); return true; }
   if (d.oqgo !== undefined) { OQ.i = +d.oqgo; render(); return true; }
   if (!d.oq) return false;
   switch (d.oq) {
@@ -3623,7 +3649,7 @@ function mondoReadyForBoss(m) {
 
 function record(a, qi, correct, sure, mode) {
   const s = st(a.id), t = today();
-  s.lq = qi;
+  s.lq = qi; s.ld = t;
   const first = !s.seen; s.seen = 1;
   if (correct) {
     s.r++;
@@ -3664,19 +3690,31 @@ function streakNow() { const k = S.streak; if (k.last == null) return 0; const g
 const CFG = { 5: { rev: 6, neu: 0, quiz: 0, sfida: 0 }, 15: { rev: 6, neu: 7, quiz: 8, sfida: 4 }, 30: { rev: 10, neu: 14, quiz: 12, sfida: 6 }, 60: { rev: 15, neu: 28, quiz: 20, sfida: 8 } };
 function buildMission(min) {
   const c = Object.assign({}, CFG[min]);
+  // la mini-sfida cresce con i progressi: più argomenti hai studiato, più domande a tempo (fino al ritmo dell'esame)
+  if (c.sfida) { const prog = seenAtoms().length / ATOMS.length, top = { 15: 10, 30: 15, 60: 20 }[min]; c.sfida = Math.round(c.sfida + (top - c.sfida) * prog); }
   const due = dueAtoms().sort((x, y) => priority(y) - priority(x));
   let brake = false;
   if (due.length > 30 && c.neu) { brake = true; c.rev += Math.ceil(c.neu / 2); c.neu = 0; }
   const rev = due.slice(0, c.rev);
+  // se oggi hai già fatto tutto il ripasso possibile, al posto delle domande ripetute arrivano argomenti nuovi
+  { const td0 = today(), rv = new Set(rev.map(a => a.id)); const freshN = seenAtoms().filter(a => !rv.has(a.id) && peek(a.id)?.ld !== td0).length;
+    if (c.neu && freshN < c.quiz) c.neu += Math.ceil((c.quiz - freshN) / 2); }
   const neu = newAtoms().slice(0, c.neu);
   const revIds = new Set(rev.map(a => a.id));
   let quizN = c.quiz;
   if (min === 5 && rev.length < 6) quizN = 6 - rev.length;
   if (!neu.length && c.neu) quizN += Math.ceil(c.neu / 2);
-  const pool = seenAtoms().filter(a => !revIds.has(a.id)).concat(neu);
-  const quiz = weightedPick(pool, quizN, weakness);
+  // domande mirate e mini-sfida: prima gli argomenti NON fatti oggi, così una seconda missione non ripete la prima
+  const td = today(), notToday = a => peek(a.id)?.ld !== td;
+  const seenPool = seenAtoms().filter(a => !revIds.has(a.id));
+  const fresh = seenPool.filter(notToday), doneToday = seenPool.filter(a => !notToday(a));
+  let quiz = weightedPick(fresh, Math.min(quizN, fresh.length), weakness);
+  if (quiz.length < quizN) quiz = quiz.concat(weightedPick(doneToday.filter(a => peek(a.id)?.w || peek(a.id)?.red), quizN - quiz.length, weakness));
+  const used = new Set(quiz.map(a => a.id).concat(neu.map(a => a.id)));
   const boss = min >= 30 ? MONDI.find(mondoReadyForBoss) : null;
-  const sfida = boss ? [] : shuffle(pool.concat(rev)).slice(0, c.sfida);
+  const sfPool = shuffle(fresh.concat(rev).filter(a => !used.has(a.id)));
+  const sfida = boss ? [] : (sfPool.length >= c.sfida ? sfPool : sfPool.concat(shuffle(neu))).slice(0, c.sfida);
+  const pool = seenPool.concat(neu);
   const crossN = min >= 15 && ATOMS.some(a => a.u === 'u34' && peek(a.id)?.seen) ? { 15: 1, 30: 2, 60: 3 }[min] : 0;
   const cross = crossN ? pickScenarios(crossN) : [];
   const lines = [];
@@ -3947,7 +3985,7 @@ function pathView() {
       ${m.partial ? `<p class="small muted">${esc(m.partial)}</p>` : ''}
       <div>${m.units.map(uid => { const u = UNIT[uid], as = ATOMS.filter(a => a.u === uid), seen = as.filter(a => peek(a.id)?.seen).length;
         return `<div class="unit"><div class="row between"><b>${u.lez}. ${esc(u.title)}</b><span class="small muted tnum">${seen}/${as.length}</span></div>${stageBar(as)}
-        <div class="row"><button class="btn line small" style="flex:1" data-browse="${uid}">📖 Card</button><button class="btn line small" style="flex:1" data-uquiz="${uid}" ${seen ? '' : 'disabled'}>🎯 Quiz</button></div></div>`; }).join('')}</div>
+        <div class="row"><button class="btn line small" style="flex:1" data-browse="${uid}">📖 Card</button><button class="btn line small" style="flex:1" data-uquiz="${uid}">${seen < as.length ? '🎯 Studia + quiz' : '🎯 Quiz'}</button></div></div>`; }).join('')}</div>
       ${bossBtn}</div>`;
   }).join('')}</div>`;
 }
@@ -4065,7 +4103,16 @@ document.addEventListener('click', e => {
   if (d.conf) { commit(d.conf === '1'); return; }
   if (d.tab) { SHEET.tab = d.tab; renderSheet(); return; }
   if (d.browse) { BROWSE = { u: d.browse, i: 0 }; VIEW = 'browse'; render(); window.scrollTo(0, 0); return; }
-  if (d.uquiz) { const as = ATOMS.filter(a => a.u === d.uquiz && peek(a.id)?.seen); let list = []; while (list.length < 10) list = list.concat(weightedPick(as, Math.min(as.length, 10 - list.length), weakness)); startSession(list.map(a => ({ k: 'q', a: a.id, mode: 'quiz', ph: '🎯 ' + UNIT[d.uquiz].title })), 'unit'); return; }
+  if (d.uquiz) {
+    const all = ATOMS.filter(a => a.u === d.uquiz), fresh = all.filter(a => !peek(a.id)?.seen), as = all.filter(a => peek(a.id)?.seen);
+    const steps = [];
+    // prima le schede della lezione non ancora studiate (scheda + verifica), poi le domande sulle altre
+    fresh.forEach(a => { steps.push({ k: 'card', a: a.id, ph: '🆕 ' + UNIT[d.uquiz].title }); steps.push({ k: 'q', a: a.id, mode: 'learn', ph: '🆕 Verifica' }); });
+    const n = Math.max(0, 10 - fresh.length); let list = [];
+    if (as.length) while (list.length < n) list = list.concat(weightedPick(as, Math.min(as.length, n - list.length), weakness));
+    list.forEach(a => steps.push({ k: 'q', a: a.id, mode: 'quiz', ph: '🎯 ' + UNIT[d.uquiz].title }));
+    startSession(steps, 'unit'); return;
+  }
   if (d.boss) { startSession([{ k: 'intro', boss: d.boss }].concat(bossSteps(d.boss)), 'boss'); return; }
   switch (d.act) {
     case 'crossreset': SES.cstate = { seq: [], res: null }; render(); break;
